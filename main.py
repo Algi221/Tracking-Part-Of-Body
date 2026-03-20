@@ -1,8 +1,6 @@
 import cv2
 import mediapipe as mp
 import numpy as np
-import random
-import math
 import time
 import os
 import urllib.request
@@ -12,46 +10,16 @@ import urllib.request
 # pip install mediapipe opencv-python numpy
 # ==========================================
 
-def draw_lightning(frame, pt1, pt2, color=(255, 255, 0), thickness=2, glow_layer=None):
-    """
-    Draws a procedural lightning bolt between pt1 and pt2.
-    """
-    distance = math.hypot(pt2[0]-pt1[0], pt2[1]-pt1[1])
-    if distance < 5:
-        return
-
-    segments = max(1, int(distance // 15))
-    pts = [pt1]
-    
-    # Generate zig-zag points
-    for i in range(1, segments):
-        t = i / segments
-        # Interpolate and add random displacement
-        nx = int(pt1[0] + (pt2[0]-pt1[0])*t + random.randint(-15, 15))
-        ny = int(pt1[1] + (pt2[1]-pt1[1])*t + random.randint(-15, 15))
-        pts.append((nx, ny))
-    pts.append(pt2)
-    
-    # Draw segments
-    for i in range(len(pts)-1):
-        cv2.line(frame, pts[i], pts[i+1], color, thickness)
-        if glow_layer is not None:
-            # Draw thicker line on glow layer for volumetric effect
-            cv2.line(glow_layer, pts[i], pts[i+1], color, thickness + 4)
-            
-        # Occasional branches
-        if random.random() < 0.3:
-            bx = pts[i][0] + random.randint(-25, 25)
-            by = pts[i][1] + random.randint(-25, 25)
-            cv2.line(frame, pts[i], (bx, by), color, max(1, thickness-1))
-            if glow_layer is not None:
-                cv2.line(glow_layer, pts[i], (bx, by), color, max(1, thickness))
+# Standard MediaPipe hand connections
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),        # Thumb
+    (0, 5), (5, 6), (6, 7), (7, 8),        # Index
+    (5, 9), (9, 10), (10, 11), (11, 12),   # Middle
+    (9, 13), (13, 14), (14, 15), (15, 16), # Ring
+    (13, 17), (0, 17), (17, 18), (18, 19), (19, 20) # Pinky + palm
+]
 
 def main():
-    # Model Setup for newer MediaPipe Tasks API
-    # Since mediapipe.solutions is unavailable in modern Python 3.12+ 
-    # we use the Tasks API and download the models explicitly.
-    
     if not os.path.exists('hand_landmarker.task'):
         print("Downloading hand_landmarker.task...")
         urllib.request.urlretrieve('https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', 'hand_landmarker.task')
@@ -92,6 +60,8 @@ def main():
 
     print("Starting webcam... Press 'q' or 'ESC' to exit.")
 
+    start_time = time.time()
+
     while cap.isOpened():
         success, frame = cap.read()
         if not success:
@@ -108,82 +78,98 @@ def main():
         hand_result = hand_landmarker.detect(mp_image)
         face_result = face_landmarker.detect(mp_image)
 
-        # Dedicated glow layer for additive blending (particles and lightning)
-        glow_layer = np.zeros_like(frame, dtype=np.uint8)
-
-        left_hand_center = None
-        right_hand_center = None
-
-        cyan = (255, 255, 0)
-        blue = (255, 100, 0)
-
-        # Find hands
+        # -------------------
+        # HAND TRACKING HUD
+        # -------------------
         if hand_result and hand_result.hand_landmarks:
             for i, hand_landmarks in enumerate(hand_result.hand_landmarks):
-                # Classify rough hand index
-                if i == 0:
-                    wrist = hand_landmarks[0]
-                    left_hand_center = (int(wrist.x * w), int(wrist.y * h))
-                    
-                    fingertips = [8, 12, 16, 20, 4]
-                    for tip_idx in fingertips:
-                        pt = hand_landmarks[tip_idx]
-                        px, py = int(pt.x * w), int(pt.y * h)
-                        if random.random() > 0.2:
-                            cv2.circle(glow_layer, (px, py), random.randint(10, 20), cyan, -1)
-                            if left_hand_center:
-                                draw_lightning(frame, left_hand_center, (px, py), cyan, 2, glow_layer)
+                pts = []
+                for landmark in hand_landmarks:
+                    x, y = int(landmark.x * w), int(landmark.y * h)
+                    pts.append((x, y))
                 
-                if i == 1:
-                    wrist = hand_landmarks[0]
-                    right_hand_center = (int(wrist.x * w), int(wrist.y * h))
+                # Draw connections (Thin white lines)
+                for connection in HAND_CONNECTIONS:
+                    pt1 = pts[connection[0]]
+                    pt2 = pts[connection[1]]
+                    cv2.line(frame, pt1, pt2, (255, 255, 255), 1, cv2.LINE_AA)
+                
+                # Draw joint dots (White circles)
+                for pt in pts:
+                    cv2.circle(frame, pt, 3, (255, 255, 255), -1)
+
+                # Optional Neon Bounding Box for Hand
+                if pts:
+                    x_coords = [p[0] for p in pts]
+                    y_coords = [p[1] for p in pts]
+                    min_hx, max_hx = min(x_coords), max(x_coords)
+                    min_hy, max_hy = min(y_coords), max(y_coords)
                     
-                    fingertips = [8, 12, 16, 20, 4]
-                    for tip_idx in fingertips:
-                        pt = hand_landmarks[tip_idx]
-                        px, py = int(pt.x * w), int(pt.y * h)
-                        if random.random() > 0.2:
-                            cv2.circle(glow_layer, (px, py), random.randint(10, 20), cyan, -1)
-                            if right_hand_center:
-                                draw_lightning(frame, right_hand_center, (px, py), cyan, 2, glow_layer)
+                    hand_label = "Hand"
+                    if hand_result.handedness and len(hand_result.handedness) > i:
+                        hand_label = f"{hand_result.handedness[i][0].category_name} Hand"
+                    
+                    # Draw a subtle cyan tracking box for hands
+                    cv2.rectangle(frame, (min_hx - 10, min_hy - 10), (max_hx + 10, max_hy + 10), (255, 255, 0), 1)
+                    cv2.putText(frame, hand_label, (min_hx - 10, min_hy - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
 
-        # Lightning Arc between hands
-        distance_between_hands = float('inf')
-        if left_hand_center and right_hand_center:
-            distance_between_hands = math.hypot(right_hand_center[0] - left_hand_center[0], 
-                                                right_hand_center[1] - left_hand_center[1])
-            # Draw intense lightning if hands are somewhat close
-            if distance_between_hands < 400:
-                for _ in range(3): # Multiple arcs
-                    draw_lightning(frame, left_hand_center, right_hand_center, blue, 3, glow_layer)
-
-        # Point-cloud Face Mesh HUD
+        # -------------------
+        # FACE TRACKING HUD
+        # -------------------
         if face_result and face_result.face_landmarks:
-            face_color_b = 255
-            face_color_g = 255
-            face_color_r = 0
-            
-            if distance_between_hands < 400:
-                intensity = int((400 - distance_between_hands) / 400 * 255)
-                face_color_b = max(0, face_color_b - intensity)
-                face_color_g = max(0, face_color_g - intensity)
-                face_color_r = min(255, face_color_r + intensity)
-
-            color = (face_color_b, face_color_g, face_color_r)
-            
+            face_pts = []
             for face_landmarks in face_result.face_landmarks:
                 for landmark in face_landmarks:
                     x, y = int(landmark.x * w), int(landmark.y * h)
-                    cv2.circle(frame, (x, y), 1, color, -1)
+                    face_pts.append((x, y))
+                    # Draw dense point-cloud (White dots)
+                    cv2.circle(frame, (x, y), 1, (255, 255, 255), -1)
+                
+                # Draw Neon Purple/Pink Bounding Box framing the face
+                if face_pts:
+                    x_coords = [p[0] for p in face_pts]
+                    y_coords = [p[1] for p in face_pts]
+                    min_fx, max_fx = min(x_coords), max(x_coords)
+                    min_fy, max_fy = min(y_coords), max(y_coords)
+                    
+                    neon_purple = (255, 0, 255) # BGR
+                    # Draw Main Box
+                    cv2.rectangle(frame, (min_fx - 15, min_fy - 15), (max_fx + 15, max_fy + 15), neon_purple, 2)
+                    
+                    # Draw Crosshairs/Corner accents
+                    length = 20
+                    # Top Left
+                    cv2.line(frame, (min_fx - 15, min_fy - 15), (min_fx - 15 + length, min_fy - 15), neon_purple, 4)
+                    cv2.line(frame, (min_fx - 15, min_fy - 15), (min_fx - 15, min_fy - 15 + length), neon_purple, 4)
+                    # Bottom Right
+                    cv2.line(frame, (max_fx + 15, max_fy + 15), (max_fx + 15 - length, max_fy + 15), neon_purple, 4)
+                    cv2.line(frame, (max_fx + 15, max_fy + 15), (max_fx + 15, max_fy + 15 - length), neon_purple, 4)
 
-        # --- APPLY EFFECTS ---
-        # Blur the glow layer slightly for volumetric effect
-        glow_layer = cv2.GaussianBlur(glow_layer, (15, 15), 0)
+                    cv2.putText(frame, "Face", (min_fx - 15, min_fy - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, neon_purple, 1)
+
+        # -------------------
+        # TIMECODE UI
+        # -------------------
+        elapsed = time.time() - start_time
+        hours = int(elapsed // 3600)
+        minutes = int((elapsed % 3600) // 60)
+        seconds = int(elapsed % 60)
+        frames = int((elapsed * 30) % 30) # Simulating 30fps Timecode Format
+        timecode_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}:{frames:02d}"
         
-        # Additive Blending: add the glow layer directly to the original frame
-        cv2.addWeighted(glow_layer, 2.0, frame, 1.0, 0, frame)
+        # Bottom center placing
+        if timecode_str:
+            font_scale = 0.8
+            thickness = 2
+            text_size = cv2.getTextSize(timecode_str, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)[0]
+            txt_x = (w - text_size[0]) // 2
+            txt_y = h - 30
+            
+            # Dark grey background bar for text
+            cv2.rectangle(frame, (txt_x - 15, txt_y - text_size[1] - 10), (txt_x + text_size[0] + 15, txt_y + 10), (40, 40, 40), -1)
+            cv2.putText(frame, timecode_str, (txt_x, txt_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
 
-        cv2.imshow('Electric Aura & Face Mesh', frame)
+        cv2.imshow('Face & Hand Tracking UI', frame)
         
         # Press 'q' or ESC to exit
         key = cv2.waitKey(5) & 0xFF
